@@ -2,7 +2,7 @@
 Streamlit UI
 """
 import streamlit as st
-from backend.db_ai import sql_answer
+from src.backend.db_ai import sql_answer
 
 st.set_page_config(page_title="Tadami Route Chat", layout="wide")
 
