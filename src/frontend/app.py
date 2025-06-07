@@ -1,8 +1,8 @@
-# --- app.py (最上部) -----------
+# --- パス設定ここだけ修正 ---------------------------------
 import sys, pathlib
-sys.path.append(str(pathlib.Path(__file__).resolve().parent.parent))
-# ↑ これでリポジトリルートがパスに入る
-# --------------------------------
+# app.py → frontend → src → プロジェクトルート と 3 階層上がる
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+# -----------------------------------------------------------
 
 """
 Streamlit UI
