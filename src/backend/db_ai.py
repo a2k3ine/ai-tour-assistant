@@ -9,7 +9,7 @@ import openai
 import pandas as pd
 import pyodbc
 from io import StringIO
-from . import settings
+from ..config import settings
 
 # -- OpenAI 初期化 -------------------------------------------------
 openai.api_type  = "azure"
