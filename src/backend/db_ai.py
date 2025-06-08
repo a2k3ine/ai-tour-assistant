@@ -101,7 +101,7 @@ def sql_answer(question: str) -> dict:
     ・「只見線に乗る」「只見線に乗りたい」→只見線の駅間移動を含む
     ・スポット名がなければカテゴリ、なければtags/descriptionで候補抽出
     ・候補スポットから歩ける範囲の停留所/駅をstop_to_spotで探索
-    ・移動手段(route_id)を使い、できるだけ多くの候補スポットを回るルートを探索
+    ・移動手段(route_id, transport_type)を使い、できるだけ多くの候補スポットを回るルートを探索
     ・各スポットの滞在時間を考慮し、日程表形式で出発時刻も含めて提案
     ・「半日」「3時間」「一日」などの時間指定があれば、その範囲内で回れるルートを提案
     ・「何時から」などの時間指定があれば、その時間を起点にルートを提案
@@ -128,27 +128,11 @@ def sql_answer(question: str) -> dict:
     buf.write(df.head().to_markdown(index=False))
     result_md = buf.getvalue()
 
-    # --- 時間指定の抽出 ---
-    time_limit = None
-    start_time = None
-    # 半日/一日/3時間など
-    if re.search(r'半日', question):
-        time_limit = 4 * 60  # 4時間
-    elif re.search(r'一日', question):
-        time_limit = 8 * 60  # 8時間
-    m = re.search(r'(\d+)\s*時間', question)
-    if m:
-        time_limit = int(m.group(1)) * 60
-    # 何時から
-    m2 = re.search(r'(\d{1,2})時(から|より|に)?', question)
-    if m2:
-        start_time = int(m2.group(1))
-    # --- ルート日本語提案 ---
     route_md = ""
     # 只見線に乗る/乗りたいが含まれる場合は只見線移動を優先
     if re.search(r"只見線に乗(る|りたい)", question):
         sql_tadami = '''
-        SELECT s.name, s.primary_category, st.stop_name, tr.route_name, t.departure_time, sts.walk_minutes, s.min_stay_minutes, s.base_stay_minutes
+        SELECT s.name, s.primary_category, st.stop_name, tr.route_name, tr.transport_type, t.departure_time, sts.walk_minutes, s.min_stay_minutes, s.base_stay_minutes
         FROM spots s
         JOIN stop_to_spot sts ON s.spot_id = sts.spot_id
         JOIN stops st ON sts.stop_id = st.stop_id
@@ -160,39 +144,34 @@ def sql_answer(question: str) -> dict:
         try:
             df_tadami = run_sql(sql_tadami)
             if not df_tadami.empty:
-                # 時間制約があればフィルタ
                 filtered = []
                 total_minutes = 0
-                prev_dep = None
                 for i, row in df_tadami.iterrows():
                     stay = row.get('base_stay_minutes') or row.get('min_stay_minutes') or 30
                     walk = row.get('walk_minutes') or 0
                     dep = row.get('departure_time')
-                    # 出発時刻フィルタ
+                    transport = row.get('transport_type', '')
                     if 'start_time' in time_constraints and dep:
                         if dep < time_constraints['start_time']:
                             continue
-                    filtered.append((row, stay, walk, dep))
-                # 合計所要時間計算
-                for i, (row, stay, walk, dep) in enumerate(filtered):
+                    filtered.append((row, stay, walk, dep, transport))
+                for i, (row, stay, walk, dep, transport) in enumerate(filtered):
                     total_minutes += int(stay) + int(walk)
-                # 制約超過ならカット
                 if 'max_minutes' in time_constraints and total_minutes > time_constraints['max_minutes']:
                     route_md += f"指定時間({time_constraints['max_minutes']//60}時間)内で回れる只見線ルートがありませんでした。\n"
                 elif filtered:
                     route_md += "只見線で移動できるスポット日程例:\n"
-                    for i, (row, stay, walk, dep) in enumerate(filtered):
+                    for i, (row, stay, walk, dep, transport) in enumerate(filtered):
                         spot = row.get('name', '')
                         stop = row.get('stop_name', '')
-                        route_md += f"{i+1}. {spot}（最寄り: {stop}） 出発:{dep} 徒歩:{walk}分 滞在:{stay}分\n"
+                        route = row.get('route_name', '')
+                        route_md += f"{i+1}. {spot}（最寄り: {stop}） [{route}/{transport}] 出発:{dep} 徒歩:{walk}分 滞在:{stay}分\n"
                     route_md += f"\nこの順に巡ることをおすすめします。合計所要時間: {total_minutes}分\n"
         except Exception:
             pass
-    # スポット名/カテゴリ/タグ/説明で候補抽出
     else:
         keywords = extract_keywords(question)
-        # 1. スポット名
-        like_clauses = [f"name LIKE '%{kw}%' OR alt_names LIKE '%{kw}%" for kw in keywords]
+        like_clauses = [f"name LIKE '%{kw}%' OR alt_names LIKE '%{kw}%'" for kw in keywords]
         sql_spot = f"SELECT * FROM spots WHERE {' OR '.join(like_clauses)};" if like_clauses else ""
         spot_candidates = []
         if sql_spot:
@@ -202,9 +181,8 @@ def sql_answer(question: str) -> dict:
                     spot_candidates = df_spot['spot_id'].tolist()
             except Exception:
                 pass
-        # 2. カテゴリ
         if not spot_candidates and keywords:
-            like_cat = [f"primary_category LIKE '%{kw}%" for kw in keywords]
+            like_cat = [f"primary_category LIKE '%{kw}%'" for kw in keywords]
             sql_cat = f"SELECT spot_id FROM spots WHERE {' OR '.join(like_cat)};"
             try:
                 df_cat = run_sql(sql_cat)
@@ -212,9 +190,8 @@ def sql_answer(question: str) -> dict:
                     spot_candidates = df_cat['spot_id'].tolist()
             except Exception:
                 pass
-        # 3. tags
         if not spot_candidates and keywords:
-            like_tags = [f"tags LIKE '%{kw}%" for kw in keywords]
+            like_tags = [f"tags LIKE '%{kw}%'" for kw in keywords]
             sql_tags = f"SELECT spot_id FROM spots WHERE {' OR '.join(like_tags)};"
             try:
                 df_tags = run_sql(sql_tags)
@@ -222,9 +199,8 @@ def sql_answer(question: str) -> dict:
                     spot_candidates = df_tags['spot_id'].tolist()
             except Exception:
                 pass
-        # 4. description
         if not spot_candidates and keywords:
-            like_desc = [f"description LIKE '%{kw}%" for kw in keywords]
+            like_desc = [f"description LIKE '%{kw}%'" for kw in keywords]
             sql_desc = f"SELECT spot_id FROM spots WHERE {' OR '.join(like_desc)};"
             try:
                 df_desc = run_sql(sql_desc)
@@ -232,21 +208,10 @@ def sql_answer(question: str) -> dict:
                     spot_candidates = df_desc['spot_id'].tolist()
             except Exception:
                 pass
-        # 候補スポットから歩ける範囲の停留所/駅を探索
-        if spot_candidates:
-            sql_stops = f"SELECT * FROM stop_to_spot WHERE spot_id IN ({', '.join([repr(s) for s in spot_candidates])});"
-            try:
-                df_stops = run_sql(sql_stops)
-                if not df_stops.empty:
-                    route_md += "スポット候補と最寄り停留所:\n"
-                    for i, row in df_stops.iterrows():
-                        route_md += f"- spot_id:{row['spot_id']} stop_id:{row['stop_id']} 徒歩:{row['walk_minutes']}分\n"
-            except Exception:
-                pass
-        # ルート探索・日程表形式（簡易例）
+        # ルート探索: transport_routes(バス/鉄道)で最寄り停留所まで移動→徒歩でスポット
         if spot_candidates:
             sql_routes = f'''
-            SELECT s.name, st.stop_name, tr.route_name, t.departure_time, s.base_stay_minutes, s.min_stay_minutes
+            SELECT s.name, st.stop_name, tr.route_name, tr.transport_type, t.departure_time, sts.walk_minutes, s.base_stay_minutes, s.min_stay_minutes
             FROM spots s
             JOIN stop_to_spot sts ON s.spot_id = sts.spot_id
             JOIN stops st ON sts.stop_id = st.stop_id
@@ -262,24 +227,24 @@ def sql_answer(question: str) -> dict:
                     total_minutes = 0
                     for i, row in df_routes.iterrows():
                         stay = row.get('base_stay_minutes') or row.get('min_stay_minutes') or 30
+                        walk = row.get('walk_minutes') or 0
                         dep = row.get('departure_time')
-                        # 出発時刻フィルタ
+                        transport = row.get('transport_type', '')
+                        route = row.get('route_name', '')
                         if 'start_time' in time_constraints and dep:
                             if dep < time_constraints['start_time']:
                                 continue
-                        filtered.append((row, stay, dep))
-                    for i, (row, stay, dep) in enumerate(filtered):
-                        total_minutes += int(stay)
-                    # 制約超過ならカット
+                        filtered.append((row, stay, walk, dep, transport, route))
+                    for i, (row, stay, walk, dep, transport, route) in enumerate(filtered):
+                        total_minutes += int(stay) + int(walk)
                     if 'max_minutes' in time_constraints and total_minutes > time_constraints['max_minutes']:
                         route_md += f"指定時間({time_constraints['max_minutes']//60}時間)内で回れるルートがありませんでした。\n"
                     elif filtered:
                         route_md += "\n日程表例:\n"
-                        for i, (row, stay, dep) in enumerate(filtered):
+                        for i, (row, stay, walk, dep, transport, route) in enumerate(filtered):
                             spot = row.get('name', '')
                             stop = row.get('stop_name', '')
-                            route = row.get('route_name', '')
-                            route_md += f"{i+1}. {spot}（{stop}）{route} 出発:{dep} 滞在:{stay}分\n"
+                            route_md += f"{i+1}. {spot}（{stop}）[{route}/{transport}] 出発:{dep} 徒歩:{walk}分 滞在:{stay}分\n"
                         route_md += f"\nこの順に巡ることをおすすめします。合計所要時間: {total_minutes}分\n"
             except Exception:
                 pass
