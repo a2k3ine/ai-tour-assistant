@@ -12,3 +12,8 @@ Thumbs.db
 
 # Secrets
 .env
+
+# Local data and docs
+data/
+old/
+reference/

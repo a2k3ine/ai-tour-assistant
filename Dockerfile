@@ -4,22 +4,27 @@ FROM python:3.11-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         gcc \
+        unixodbc \
         unixodbc-dev \
         freetds-dev \
+        tdsodbc \
+        curl \
+        gnupg \
         && rm -rf /var/lib/apt/lists/*
 
-# 作業ディレクトリを作成
+# Microsoft ODBC Driver 18 for SQL Server のインストール
+RUN curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add - && \
+    curl https://packages.microsoft.com/config/debian/11/prod.list > /etc/apt/sources.list.d/mssql-release.list && \
+    apt-get update && \
+    ACCEPT_EULA=Y apt-get install -y msodbcsql18
+
 WORKDIR /app
 
-# Pythonパッケージのインストール
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# アプリのソースコードをコピー
 COPY . .
 
-# ポート指定（Streamlitのデフォルト）
 EXPOSE 8501
 
-# Streamlitアプリの起動コマンド
 CMD ["streamlit", "run", "src/frontend/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
